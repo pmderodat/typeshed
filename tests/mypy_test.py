@@ -18,6 +18,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections.abc import Iterable
+from contextlib import redirect_stderr, redirect_stdout
+from io import StringIO
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
@@ -27,6 +30,7 @@ if TYPE_CHECKING:
 from typing_extensions import TypeAlias
 
 import tomli
+from colors import colored, print_error, print_success_msg
 
 parser = argparse.ArgumentParser(description="Test runner for typeshed. Patterns are unanchored regexps on the full path.")
 parser.add_argument("-v", "--verbose", action="count", default=0, help="More output")
@@ -139,14 +143,14 @@ def add_configuration(configurations: list[MypyDistConf], distribution: str) -> 
 
     assert isinstance(mypy_tests_conf, dict), "mypy-tests should be a section"
     for section_name, mypy_section in mypy_tests_conf.items():
-        assert isinstance(mypy_section, dict), "{} should be a section".format(section_name)
+        assert isinstance(mypy_section, dict), f"{section_name} should be a section"
         module_name = mypy_section.get("module_name")
 
-        assert module_name is not None, "{} should have a module_name key".format(section_name)
-        assert isinstance(module_name, str), "{} should be a key-value pair".format(section_name)
+        assert module_name is not None, f"{section_name} should have a module_name key"
+        assert isinstance(module_name, str), f"{section_name} should be a key-value pair"
 
         values = mypy_section.get("values")
-        assert values is not None, "{} should have a values section".format(section_name)
+        assert values is not None, f"{section_name} should have a values section"
         assert isinstance(values, dict), "values should be a section"
 
         configurations.append(MypyDistConf(module_name, values.copy()))
@@ -164,7 +168,7 @@ def run_mypy(
     try:
         from mypy.api import run as mypy_run
     except ImportError:
-        print("Cannot import mypy. Did you install it?")
+        print_error("Cannot import mypy. Did you install it?")
         sys.exit(1)
 
     with tempfile.NamedTemporaryFile("w+") as temp:
@@ -172,7 +176,7 @@ def run_mypy(
         for dist_conf in configurations:
             temp.write("[mypy-%s]\n" % dist_conf.module_name)
             for k, v in dist_conf.values.items():
-                temp.write("{} = {}\n".format(k, v))
+                temp.write(f"{k} = {v}\n")
         temp.flush()
 
         flags = get_mypy_flags(args, major, minor, temp.name, custom_typeshed=custom_typeshed)
@@ -182,10 +186,38 @@ def run_mypy(
         if args.dry_run:
             exit_code = 0
         else:
-            stdout, stderr, exit_code = mypy_run(mypy_args)
-            print(stdout, end="")
-            print(stderr, file=sys.stderr, end="")
+            stdout_redirect, stderr_redirect = StringIO(), StringIO()
+            with redirect_stdout(stdout_redirect), redirect_stderr(stderr_redirect):
+                returned_stdout, returned_stderr, exit_code = mypy_run(mypy_args)
+
+            if exit_code:
+                print_error("failure\n")
+                captured_stdout = stdout_redirect.getvalue()
+                captured_stderr = stderr_redirect.getvalue()
+                if returned_stderr:
+                    print_error(returned_stderr)
+                if captured_stderr:
+                    print_error(captured_stderr)
+                if returned_stdout:
+                    print_error(returned_stdout)
+                if captured_stdout:
+                    print_error(captured_stdout, end="")
+            else:
+                print_success_msg()
         return exit_code
+
+
+ReturnCode: TypeAlias = int
+
+
+def run_mypy_as_subprocess(directory: StrPath, flags: Iterable[str]) -> ReturnCode:
+    result = subprocess.run([sys.executable, "-m", "mypy", directory, *flags], capture_output=True)
+    stdout, stderr = result.stdout, result.stderr
+    if stderr:
+        print_error(stderr.decode())
+    if stdout:
+        print_error(stdout.decode())
+    return result.returncode
 
 
 def get_mypy_flags(
@@ -223,6 +255,7 @@ def get_mypy_flags(
     if strict:
         flags.append("--strict")
     if test_suite_run:
+        flags.append("--namespace-packages")
         if sys.platform == "win32" or args.platform == "win32":
             flags.extend(["--exclude", "tests/pytype_test.py"])
     else:
@@ -280,10 +313,10 @@ def test_third_party_distribution(distribution: str, major: int, minor: int, arg
     seen_dists: set[str] = set()
     add_third_party_files(distribution, major, files, args, configurations, seen_dists)
 
-    print(f"testing {distribution} ({len(files)} files)...")
+    print(f"testing {distribution} ({len(files)} files)... ", end="")
 
     if not files:
-        print("--- no files found ---")
+        print_error("no files found")
         sys.exit(1)
 
     code = run_mypy(args, configurations, major, minor, files)
@@ -362,7 +395,9 @@ def test_the_test_scripts(code: int, major: int, minor: int, args: argparse.Name
     if args.dry_run:
         this_code = 0
     else:
-        this_code = subprocess.run([sys.executable, "-m", "mypy", "tests", *flags]).returncode
+        this_code = run_mypy_as_subprocess("tests", flags)
+    if not this_code:
+        print_success_msg()
     code = max(code, this_code)
     return TestResults(code, num_test_files_to_test)
 
@@ -380,7 +415,9 @@ def test_the_test_cases(code: int, major: int, minor: int, args: argparse.Namesp
         # SO, to work around this, we copy the test_cases directory into a TemporaryDirectory.
         with tempfile.TemporaryDirectory() as td:
             shutil.copytree(Path("test_cases"), Path(td) / "test_cases")
-            this_code = subprocess.run([sys.executable, "-m", "mypy", td, *flags]).returncode
+            this_code = run_mypy_as_subprocess(td, flags)
+    if not this_code:
+        print_success_msg()
     code = max(code, this_code)
     return TestResults(code, num_test_case_files)
 
@@ -422,7 +459,7 @@ def main() -> None:
     if args.python_version:
         versions = [v for v in versions if any(("%d.%d" % v).startswith(av) for av in args.python_version)]
         if not versions:
-            print("--- no versions selected ---")
+            print_error("--- no versions selected ---")
             sys.exit(1)
 
     code = 0
@@ -431,13 +468,17 @@ def main() -> None:
         code, files_checked_this_version = test_typeshed(code, major, minor, args)
         total_files_checked += files_checked_this_version
     if code:
-        print(f"--- exit status {code}, {total_files_checked} files checked ---")
+        print_error(f"--- exit status {code}, {total_files_checked} files checked ---")
         sys.exit(code)
     if not total_files_checked:
-        print("--- nothing to do; exit 1 ---")
+        print_error("--- nothing to do; exit 1 ---")
         sys.exit(1)
-    print(f"--- success, {total_files_checked} files checked ---")
+    print(colored(f"--- success, {total_files_checked} files checked ---", "green"))
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print_error("\n\n!!!\nTest aborted due to KeyboardInterrupt\n!!!")
+        sys.exit(1)
