@@ -100,8 +100,6 @@ dummy_threading.Lock
 dummy_threading.RLock
 dummy_threading.stack_size
 html.parser.HTMLParser.unescape
-inspect.Signature.from_builtin  # Removed in 3.11, can add if someone needs this
-inspect.Signature.from_function  # Removed in 3.11, can add if someone needs this
 platform.popen
 plistlib.Data.asBase64
 plistlib.Data.fromBase64

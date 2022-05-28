@@ -118,8 +118,6 @@ dummy_threading.Lock
 dummy_threading.RLock
 dummy_threading.stack_size
 html.parser.HTMLParser.unescape
-inspect.Signature.from_builtin  # Removed in 3.11, can add if someone needs this
-inspect.Signature.from_function  # Removed in 3.11, can add if someone needs this
 multiprocessing.managers.SharedMemoryServer.create
 multiprocessing.managers.SharedMemoryServer.list_segments
 multiprocessing.managers.SharedMemoryServer.public
